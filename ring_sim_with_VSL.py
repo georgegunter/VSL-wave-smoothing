@@ -44,6 +44,12 @@ class simulate_ring_with_VSL():
 		x_init = np.arange(0,self.ring_length,s_init)
 		self.X[:,0] = x_init
 
+		# Added functionality to allow for an RDS unit:
+		self.RDS_time_counts = []
+		self.RDS_speed_measurements = []
+		self.X_prev = self.X[:,0]
+		self.last_seen_vehicle_id = 0
+
 
 	def step_sim(self,want_added_noise=False):
 		#vehicle 0 follows 1, 1 follows 2, ... n follows 0:
@@ -58,30 +64,26 @@ class simulate_ring_with_VSL():
 			# get CFM for the correct vehicle:
 			dv_dt = self.HV_accel_func_list[i].accel_func(s,v,ds_dt)
 
-			# if(self.curr_sim_time > self.VSL_switch_on_time):
-			# 	if(i == 0):
-			# 		print('Adjusted CFM v_max: '+str(self.HV_accel_func_list[i].params[2]))
-			# 		print('Commanded accel : '+str(dv_dt))
-
-
 			v_new = v + dv_dt*self.dt
 
 			if(want_added_noise):
 				v_new += np.random.randn()*self.added_noise_std
 
+			v_new = np.max([v_new,0.0])
+			
 			s_new = s + ds_dt*self.dt
 			x_new = x + v*self.dt
 
 			if(s_new < 0.0):
 				print('Collision occurred with vehicle '+str(i))
 
-			v_new = np.max([v_new,0.0])
 			s_new = np.max([s_new,0.0])
 
 			# fill in to simulation record:
 			self.S[i,self.curr_sim_step] = s_new
 			self.X[i,self.curr_sim_step] = x_new
 			self.V[i,self.curr_sim_step] = v_new
+			self.DV_Dt[i,self.curr_sim_step] = dv_dt
 
 		DS_DT_new = np.zeros_like(self.DS_DT[:,self.curr_sim_step])
 
@@ -91,9 +93,42 @@ class simulate_ring_with_VSL():
 
 		self.DS_DT[:,self.curr_sim_step] = DS_DT_new
 
+		self.update_RDS()
+
 		# advance simulation
 		self.curr_sim_step += 1
 		self.curr_sim_time += self.dt
+
+		
+
+
+	def update_RDS(self):
+		'''
+		Has two issues: catches every vehicle at every step
+		and has an out of bounds indexing error when trying
+		to get curr_X, but only after one iteration has
+		went through
+
+		'''
+		curr_X = self.X[:,self.curr_sim_step]
+		curr_X = np.mod(curr_X,self.ring_length)
+
+		X_diff = curr_X - self.X_prev
+
+		for i in range(self.num_vehicles):
+			if(X_diff[i] < 0):
+
+				if(i != self.last_seen_vehicle_id):
+					# means a vehicle passed 0 on the ring road
+					measurement_time = self.curr_sim_time
+					self.RDS_time_counts.append(measurement_time)
+					measured_speed = self.V[i,self.curr_sim_step]
+					self.RDS_speed_measurements.append(measured_speed)
+					self.last_seen_vehicle_id = i
+
+					# print('Updated RDS measurement, time: '+str(measurement_time)+' speed: '+str(measured_speed),' veh id: '+str(self.last_seen_vehicle_id))
+
+		self.X_prev = curr_X
 
 
 	def initialize_sim_with_waves(self):
@@ -107,12 +142,12 @@ class simulate_ring_with_VSL():
 		self.initialize_sim_with_waves()
 		# run for the remaining duration of the simulation:
 
-		# steps_left_to = self.curr_sim_step
+		# while(self.curr_sim_step < self.num_steps):
 
-		# for i in range()
-
-		while(self.curr_sim_step < self.num_steps):
+		for i in range(self.curr_sim_step,self.num_steps):
 			# check to see if VSL should switch on:
+			# print('sim step: '+str(self.curr_sim_step))
+
 			if(self.curr_sim_time > self.VSL_switch_on_time):
 
 
@@ -123,7 +158,8 @@ class simulate_ring_with_VSL():
 				self.HV_accel_func_list = self.VSL_update_function.HV_update(
 					self.HV_accel_func_list_original,
 					X_for_VSL,
-					V_for_VSL)
+					V_for_VSL,
+					self)
 
 				# print('Adjusted CFM v_max: '+str(self.HV_accel_func_list[0].params[2]))
 
